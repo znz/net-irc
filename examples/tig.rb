@@ -241,6 +241,7 @@ require "yaml"
 require "pathname"
 require "ostruct"
 require "json"
+require 'jcode'
 
 begin
 	require "iconv"
@@ -287,7 +288,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 	end
 
 	def api_base(secure = true)
-		URI("http#{"s" if secure}://twitter.com/")
+		URI("http#{"" if secure}://twitter.com/")
 	end
 
 	def api_source
@@ -1164,7 +1165,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		tid = args.first
 		if status = @timeline[tid]
 			text = mesg.split(" ", 3)[2]
-                        text = @opts.unuify ? unuify(text) : bitlify(text)
+			text = @opts.unuify ? unuify(text) : bitlify(text)
 			screen_name = "@#{status.user.screen_name}"
 			if text.nil? or not text.include?(screen_name)
 				text = "#{screen_name} #{text}"
@@ -1260,7 +1261,15 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 			end
 			screen_name = "@#{status.user.screen_name}"
 			rt_message = generate_status_message(status.text)
-			text = "#{comment}RT #{screen_name}: #{rt_message}"
+
+			text = "#{comment} RT #{screen_name}: #{rt_message}"
+			text = @opts.unuify ? unuify(text) : bitlify(text)
+			chars = text.each_char
+			if chars.size > 140 then
+                          url = "http://twitter.com/#{status.user.screen_name}/status/#{status.id}"
+                          url = @opts.unuify ? unuify(url) : bitlify(url)
+                          text = chars[0,140-url.size].join('') + url
+			end
 			ret = api("statuses/update", { :status => text, :source => source })
 			log oops(ret) if ret.truncated
 			log "Status updated (RT to #{@opts.tid % tid}: #{text})"
@@ -1353,7 +1362,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		lists.each do |list|
 			begin
 				name = (list.user.screen_name == @me.screen_name) ?
-					   "##{list.slug}" : 
+					   "##{list.slug}" :
 					   "##{list.user.screen_name}^#{list.slug}"
 				members = page("1/#{@me.screen_name}/#{list.slug}/members", :users, true)
 				log "Miss match member_count '%s', lists:%d vs members:%s" % [ list.slug, list.member_count, members.size ] unless list.member_count == members.size
