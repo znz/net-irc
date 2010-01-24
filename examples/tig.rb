@@ -1164,6 +1164,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		tid = args.first
 		if status = @timeline[tid]
 			text = mesg.split(" ", 3)[2]
+                        text = @opts.unuify ? unuify(text) : bitlify(text)
 			screen_name = "@#{status.user.screen_name}"
 			if text.nil? or not text.include?(screen_name)
 				text = "#{screen_name} #{text}"
