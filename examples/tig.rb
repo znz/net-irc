@@ -1944,7 +1944,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		end
 
 		text
-	rescue => e
+	rescue Errno::ETIMEDOUT, JSON::ParserError, IOError, Timeout::Error, Errno::ECONNRESET => e
 		@log.error e
 		text
 	end
@@ -1971,7 +1971,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 				raise res.split("|")
 			end
 		end
-	rescue => e
+	rescue Errno::ETIMEDOUT, JSON::ParserError, IOError, Timeout::Error, Errno::ECONNRESET => e
 		@log.error e
 		text
 	end
@@ -2077,7 +2077,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		end
 
 		uri
-	rescue => e
+	rescue Errno::ETIMEDOUT, IOError, Timeout::Error, Errno::ECONNRESET => e
 		@log.error e.inspect
 		uri
 	end
