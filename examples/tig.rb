@@ -2496,6 +2496,26 @@ if __FILE__ == $0
 				opts[:name] = name
 			end
 
+      on("-o", "--oauth") do|_|
+        require 'oauth'
+        consumer = OAuth::Consumer.new(CONSUMER_KEY,
+                                       CONSUMER_SECRET,
+                                       :site => 'http://twitter.com')
+
+        request_token = consumer.get_request_token
+
+        puts "Access this URL and approve => #{request_token.authorize_url}"
+
+        print "Input OAuth Verifier: "
+        oauth_verifier = gets.chomp.strip
+
+        access_token = request_token.get_access_token(
+          :oauth_verifier => oauth_verifier)
+
+        puts "Please add 'oauth=#{access_token.token}:#{access_token.secret}'"
+        exit 0
+      end
+
 			parse!(ARGV)
 		end
 	end
