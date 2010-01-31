@@ -249,6 +249,9 @@ end
 
 module Net::IRC::Constants; RPL_WHOISBOT = "335"; RPL_CREATEONTIME = "329"; end
 
+CONSUMER_KEY='C8UoekGb32mVZ8ERtE66A'
+CONSUMER_SECRET='Pe08j2pooXJm4SgT4uU590fVcyvgRVaN13m9u4wqGQ'
+
 class TwitterIrcGateway < Net::IRC::Server::Session
 	@@ctcp_action_commands = []
 
