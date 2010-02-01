@@ -1716,6 +1716,24 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 	#	%r{ \A status(?:es)?/retweet (?:/|\z) }x === path
 	#end
 
+  def oauth(req)
+    headers = {}
+    req.each{|k,v| headers[k] = v }
+
+    case req
+    when Net::HTTP::Get
+      @oauth.get req.path,headers
+		when Net::HTTP::Head
+      @oauth.head req.path,headers
+		when Net::HTTP::Post
+      @oauth.post req.path,req.body,headers
+		when Net::HTTP::Put
+      @oauth.put req.path,req.body,headers
+		when Net::HTTP::Delete
+      @oauth.delete req.path,req.body,headers
+    end
+  end
+
 	def api(path, query = {}, opts = {})
 		path.sub!(%r{\A/+}, "")
 
@@ -1741,7 +1759,11 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 
 		@log.debug [req.method, uri.to_s]
 		begin
-			ret = http(uri, 30, 30).request req
+      if @oauth 
+        ret = oauth(req)
+      else
+        ret = http(uri, 30, 30).request req
+      end
 		rescue OpenSSL::SSL::SSLError => e
 			@log.error e.inspect
 			log "Fatal SSL error was happened #{e.inspect}"
