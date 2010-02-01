@@ -352,6 +352,10 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 			$&.sub(/[^:@]+(?=@)/, "********")
 		end if @opts.httpproxy
 
+    if @opts.oauth 
+      @oauth = access_token(*@opts.oauth.split(":",2))
+    end
+ 
 		retry_count = 0
 		begin
 			@me = api("account/update_profile") #api("account/verify_credentials")
@@ -580,6 +584,14 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		end
 
 	end
+
+  def access_token(token,secret)
+    require 'oauth'
+    consumer = OAuth::Consumer.new(CONSUMER_KEY,
+                                   CONSUMER_SECRET,
+                                   :site => 'http://twitter.com')
+    OAuth::AccessToken.new(consumer, token, secret)
+  end
 
 	def on_disconnected
 		@check_friends_thread.kill      rescue nil
