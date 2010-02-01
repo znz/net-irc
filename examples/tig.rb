@@ -251,6 +251,9 @@ end
 
 module Net::IRC::Constants; RPL_WHOISBOT = "335"; RPL_CREATEONTIME = "329"; end
 
+CONSUMER_KEY='C8UoekGb32mVZ8ERtE66A'
+CONSUMER_SECRET='Pe08j2pooXJm4SgT4uU590fVcyvgRVaN13m9u4wqGQ'
+
 class TwitterIrcGateway < Net::IRC::Server::Session
 	@@ctcp_action_commands = []
 
@@ -351,6 +354,10 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 			$&.sub(/[^:@]+(?=@)/, "********")
 		end if @opts.httpproxy
 
+    if @opts.oauth 
+      @oauth = access_token(*@opts.oauth.split(":",2))
+    end
+ 
 		retry_count = 0
 		begin
 			@me = api("account/update_profile") #api("account/verify_credentials")
@@ -579,6 +586,14 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		end
 
 	end
+
+  def access_token(token,secret)
+    require 'oauth'
+    consumer = OAuth::Consumer.new(CONSUMER_KEY,
+                                   CONSUMER_SECRET,
+                                   :site => 'http://twitter.com')
+    OAuth::AccessToken.new(consumer, token, secret)
+  end
 
 	def on_disconnected
 		@check_friends_thread.kill      rescue nil
@@ -1712,6 +1727,24 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 	#	%r{ \A status(?:es)?/retweet (?:/|\z) }x === path
 	#end
 
+  def oauth(req)
+    headers = {}
+    req.each{|k,v| headers[k] = v }
+
+    case req
+    when Net::HTTP::Get
+      @oauth.get req.path,headers
+		when Net::HTTP::Head
+      @oauth.head req.path,headers
+		when Net::HTTP::Post
+      @oauth.post req.path,req.body,headers
+		when Net::HTTP::Put
+      @oauth.put req.path,req.body,headers
+		when Net::HTTP::Delete
+      @oauth.delete req.path,req.body,headers
+    end
+  end
+
 	def api(path, query = {}, opts = {})
 		path.sub!(%r{\A/+}, "")
 
@@ -1737,7 +1770,11 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 
 		@log.debug [req.method, uri.to_s]
 		begin
-			ret = http(uri, 30, 30).request req
+      if @oauth 
+        ret = oauth(req)
+      else
+        ret = http(uri, 30, 30).request req
+      end
 		rescue OpenSSL::SSL::SSLError => e
 			@log.error e.inspect
 			log "Fatal SSL error was happened #{e.inspect}"
@@ -2503,6 +2540,26 @@ if __FILE__ == $0
 			on("-n", "--name [user name or email address]") do |name|
 				opts[:name] = name
 			end
+
+      on("-o", "--oauth") do|_|
+        require 'oauth'
+        consumer = OAuth::Consumer.new(CONSUMER_KEY,
+                                       CONSUMER_SECRET,
+                                       :site => 'http://twitter.com')
+
+        request_token = consumer.get_request_token
+
+        puts "Access this URL and approve => #{request_token.authorize_url}"
+
+        print "Input OAuth Verifier: "
+        oauth_verifier = gets.chomp.strip
+
+        access_token = request_token.get_access_token(
+          :oauth_verifier => oauth_verifier)
+
+        puts "Please add 'oauth=#{access_token.token}:#{access_token.secret}'"
+        exit 0
+      end
 
 			parse!(ARGV)
 		end
