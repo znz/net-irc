@@ -576,6 +576,25 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 			end
 		end
 
+    @ratelimit.register(:searches, 60 * 60)
+    @check_search_thread = Thread.start do
+      Thread.current[:last_updated] = Time.at(0)
+      loop do
+        begin
+					@log.info "SEARCH update now..."
+					check_searches
+          @ratelimit.incr(:searches)
+					Thread.current[:last_updated] = Time.now
+					sleep @ratelimit.interval(:searches)
+				rescue Exception => e
+					@log.error e.inspect
+					e.backtrace.each do |l|
+						@log.error "\t#{l}"
+					end
+					sleep 60
+				end
+			end
+    end
 	end
 
 	def on_disconnected
@@ -586,6 +605,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		@check_updates_thread.kill      rescue nil
 		@check_lists_thread.kill        rescue nil
 		@check_lists_status_thread.kill rescue nil
+    @check_searches.kill            rescue nil
 		@im_thread.kill                 rescue nil
 		@im.disconnect                  rescue nil
 	end
@@ -1388,6 +1408,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 
 		# unfollowed
 		(@channels.keys - channels.keys).each do |name|
+      next if @channels[name][:search]
 			post @prefix, PART, name, "No longer follow the list #{name}"
 			updated = true
 		end
@@ -1426,6 +1447,26 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 			channel[:last_id] = res.first.id
 		end
 	end
+
+	def check_searches
+		searches = api("saved_searches",{})
+    @log.info searches.inspect
+		searches.each do |search|
+      name = '#$' + search.name
+      channel = {
+        :name      => name,
+        :search    => search,
+        :members => [],
+        :inclusion => true
+      }
+      @channels[name] = channel
+			post @prefix, JOIN, name
+			post server_name, MODE, name, "+mtio", @nick
+			post server_name, MODE, name, "+q", @nick
+		end
+	end
+
+
 
 	def check_friends
 		@follower_ids = page("followers/ids/#{@me.id}", :ids)
