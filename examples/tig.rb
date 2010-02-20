@@ -309,6 +309,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 	def initialize(*args)
 		super
 		@channels      = {}
+    @searches      = {}
 		@nicknames     = {}
 		@drones        = []
 		@etags         = {}
@@ -577,7 +578,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		end
 
     @ratelimit.register(:searches, 60 * 60)
-    @check_search_thread = Thread.start do
+    @check_searches_thread = Thread.start do
       Thread.current[:last_updated] = Time.at(0)
       loop do
         begin
@@ -595,6 +596,30 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 				end
 			end
     end
+
+    @ratelimit.register(:search_query, 60)
+    @check_search_query_thread = Thread.start do
+      Thread.current[:last_updated] = Time.at(0)
+      loop do
+        begin
+					@log.info "SEARCH status update now..."
+					if check_search_query then
+            @ratelimit.incr(:search_query)
+          else
+            @ratelimit.decr(:search_query)
+          end
+					Thread.current[:last_updated] = Time.now
+					sleep @ratelimit.interval(:search_query)
+				rescue Exception => e
+					@log.error e.inspect
+					e.backtrace.each do |l|
+						@log.error "\t#{l}"
+					end
+					sleep 60
+				end
+			end
+    end
+
 	end
 
 	def on_disconnected
@@ -605,7 +630,8 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		@check_updates_thread.kill      rescue nil
 		@check_lists_thread.kill        rescue nil
 		@check_lists_status_thread.kill rescue nil
-    @check_searches.kill            rescue nil
+    @check_searches_thread.kill     rescue nil
+    @check_search_query_thread.kill rescue nil
 		@im_thread.kill                 rescue nil
 		@im.disconnect                  rescue nil
 	end
@@ -1450,23 +1476,22 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 
 	def check_searches
 		searches = api("saved_searches",{})
-    @log.info searches.inspect
 		searches.each do |search|
-      name = '#$' + search.name
+      name = '#s:' + search.name
       channel = {
         :name      => name,
         :search    => search,
-        :members => [],
-        :inclusion => true
+        :latest_id => nil,
       }
-      @channels[name] = channel
-			post @prefix, JOIN, name
-			post server_name, MODE, name, "+mtio", @nick
-			post server_name, MODE, name, "+q", @nick
+
+      unless @searches.key?(name) then
+        post @prefix, JOIN, name
+        post server_name, MODE, name, "+mtio", @nick
+        post server_name, MODE, name, "+q", @nick
+      end
+      @searches[name] = channel
 		end
 	end
-
-
 
 	def check_friends
 		@follower_ids = page("followers/ids/#{@me.id}", :ids)
@@ -1515,6 +1540,40 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 			end
 		end
 	end
+
+  def check_search_query
+    updated = false
+    cmd  = PRIVMSG
+    api_base = URI("http://search.twitter.com/")
+    @searches.each do|name, channel|
+      @log.info channel.inspect
+      next unless channel[:search]
+
+      q = { :count => 200, :q => channel[:search].query } 
+      if channel[:latest_id] then
+        q.update(:since_id => channel[:latest_id])
+      end
+
+      api("search", q, :api_base=> api_base).results.reverse_each do|status|
+        id = channel[:latest_id] = status.id
+  
+        status["user"] = {
+          "screen_name" => status.from_user
+        }
+
+        user = status.user
+        tid  = @timeline.push(status)
+        tid  = nil unless @opts.tid
+
+        @log.debug [id, user.screen_name, status.text].inspect
+
+        message(status, name, tid, nil, cmd)
+      end
+
+      updated = true 
+    end
+    updated
+  end
 
 	def check_timeline
 		updated = false
@@ -1747,7 +1806,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 
 		authenticate = opts.fetch(:authenticate, true)
 
-		uri = api_base(authenticate)
+		uri = opts.fetch(:api_base, api_base(authenticate)) 
 		uri.path += path
 		uri.path += ".json" if path != "users/username_available"
 		uri.query = query.to_query_str unless query.empty?
@@ -2283,6 +2342,10 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		def [](name)
 			@obj[name.to_s]
 		end
+
+    def []=(name, obj)
+      @obj[name] = TwitterStruct.make(obj)
+    end
 
 		def hash
 			self.id ? self.id.hash : super
