@@ -354,10 +354,10 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 			$&.sub(/[^:@]+(?=@)/, "********")
 		end if @opts.httpproxy
 
-    if @opts.oauth 
+    if @opts.oauth
       @oauth = access_token(*@opts.oauth.split(":",2))
     end
- 
+
 		retry_count = 0
 		begin
 			@me = api("account/update_profile") #api("account/verify_credentials")
@@ -1110,6 +1110,10 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		end
 	end
 
+	ctcp_action "limit", "limits" do |target, mesg, command, args|
+		log "Limit: #{@limit.inspect}"
+	end
+
 	ctcp_action "ratio", "ratios" do |target, mesg, command, args|
 		log "Intervals: #{@ratelimit.inspect}"
 	end
@@ -1811,7 +1815,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 
 		@log.debug [req.method, uri.to_s]
 		begin
-      if @oauth 
+      if @oauth
         ret = oauth(req)
       else
         ret = http(uri, 30, 30).request req
