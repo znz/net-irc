@@ -241,7 +241,6 @@ require "yaml"
 require "pathname"
 require "ostruct"
 require "json"
-require 'jcode'
 
 begin
 	require "iconv"
@@ -291,7 +290,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 	end
 
 	def api_base(secure = true)
-		URI("http#{"" if secure}://twitter.com/")
+		URI("http#{"s" if secure}://twitter.com/")
 	end
 
 	def api_source
