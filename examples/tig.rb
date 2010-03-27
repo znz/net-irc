@@ -223,6 +223,7 @@ Ruby's by cho45
 
 =end
 
+Dir.chdir(File.dirname(__FILE__))
 case
 when File.directory?("lib")
 	$LOAD_PATH << "lib"
@@ -240,6 +241,7 @@ require "yaml"
 require "pathname"
 require "ostruct"
 require "json"
+require 'jcode'
 
 begin
 	require "iconv"
@@ -248,6 +250,9 @@ rescue LoadError
 end
 
 module Net::IRC::Constants; RPL_WHOISBOT = "335"; RPL_CREATEONTIME = "329"; end
+
+CONSUMER_KEY='C8UoekGb32mVZ8ERtE66A'
+CONSUMER_SECRET='Pe08j2pooXJm4SgT4uU590fVcyvgRVaN13m9u4wqGQ'
 
 class TwitterIrcGateway < Net::IRC::Server::Session
 	@@ctcp_action_commands = []
@@ -286,7 +291,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 	end
 
 	def api_base(secure = true)
-		URI("http#{"s" if secure}://twitter.com/")
+		URI("http#{"" if secure}://twitter.com/")
 	end
 
 	def api_source
@@ -309,6 +314,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 	def initialize(*args)
 		super
 		@channels      = {}
+    @searches      = {}
 		@nicknames     = {}
 		@drones        = []
 		@etags         = {}
@@ -348,6 +354,10 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 			})
 			$&.sub(/[^:@]+(?=@)/, "********")
 		end if @opts.httpproxy
+
+    if @opts.oauth
+      @oauth = access_token(*@opts.oauth.split(":",2))
+    end
 
 		retry_count = 0
 		begin
@@ -576,7 +586,58 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 			end
 		end
 
+    @ratelimit.register(:searches, 60 * 60)
+    @check_searches_thread = Thread.start do
+      Thread.current[:last_updated] = Time.at(0)
+      loop do
+        begin
+					@log.info "SEARCH update now..."
+					check_searches
+          @ratelimit.incr(:searches)
+					Thread.current[:last_updated] = Time.now
+					sleep @ratelimit.interval(:searches)
+				rescue Exception => e
+					@log.error e.inspect
+					e.backtrace.each do |l|
+						@log.error "\t#{l}"
+					end
+					sleep 60
+				end
+			end
+    end
+
+    @ratelimit.register(:search_query, 60)
+    @check_search_query_thread = Thread.start do
+      Thread.current[:last_updated] = Time.at(0)
+      loop do
+        begin
+					@log.info "SEARCH status update now..."
+					if check_search_query then
+            @ratelimit.incr(:search_query)
+          else
+            @ratelimit.decr(:search_query)
+          end
+					Thread.current[:last_updated] = Time.now
+					sleep @ratelimit.interval(:search_query)
+				rescue Exception => e
+					@log.error e.inspect
+					e.backtrace.each do |l|
+						@log.error "\t#{l}"
+					end
+					sleep 60
+				end
+			end
+    end
+
 	end
+
+  def access_token(token,secret)
+    require 'oauth'
+    consumer = OAuth::Consumer.new(CONSUMER_KEY,
+                                   CONSUMER_SECRET,
+                                   :site => 'http://twitter.com')
+    OAuth::AccessToken.new(consumer, token, secret)
+  end
 
 	def on_disconnected
 		@check_friends_thread.kill      rescue nil
@@ -586,6 +647,8 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		@check_updates_thread.kill      rescue nil
 		@check_lists_thread.kill        rescue nil
 		@check_lists_status_thread.kill rescue nil
+    @check_searches_thread.kill     rescue nil
+    @check_search_query_thread.kill rescue nil
 		@im_thread.kill                 rescue nil
 		@im.disconnect                  rescue nil
 	end
@@ -1073,6 +1136,10 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		end
 	end
 
+	ctcp_action "limit", "limits" do |target, mesg, command, args|
+		log "Limit: #{@limit.inspect}"
+	end
+
 	ctcp_action "ratio", "ratios" do |target, mesg, command, args|
 		log "Intervals: #{@ratelimit.inspect}"
 	end
@@ -1163,6 +1230,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		tid = args.first
 		if status = @timeline[tid]
 			text = mesg.split(" ", 3)[2]
+			text = @opts.unuify ? unuify(text) : bitlify(text)
 			screen_name = "@#{status.user.screen_name}"
 			if text.nil? or not text.include?(screen_name)
 				text = "#{screen_name} #{text}"
@@ -1258,7 +1326,15 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 			end
 			screen_name = "@#{status.user.screen_name}"
 			rt_message = generate_status_message(status.text)
-			text = "#{comment}RT #{screen_name}: #{rt_message}"
+
+			text = "#{comment} RT #{screen_name}: #{rt_message}"
+			text = @opts.unuify ? unuify(text) : bitlify(text)
+			chars = text.each_char
+			if chars.size > 140 then
+                          url = "http://twitter.com/#{status.user.screen_name}/status/#{status.id}"
+                          url = @opts.unuify ? unuify(url) : bitlify(url)
+                          text = chars[0,140-url.size].join('') + url
+			end
 			ret = api("statuses/update", { :status => text, :source => source })
 			log oops(ret) if ret.truncated
 			log "Status updated (RT to #{@opts.tid % tid}: #{text})"
@@ -1351,7 +1427,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		lists.each do |list|
 			begin
 				name = (list.user.screen_name == @me.screen_name) ?
-					   "##{list.slug}" : 
+					   "##{list.slug}" :
 					   "##{list.user.screen_name}^#{list.slug}"
 				members = page("1/#{@me.screen_name}/#{list.slug}/members", :users, true)
 				log "Miss match member_count '%s', lists:%d vs members:%s" % [ list.slug, list.member_count, members.size ] unless list.member_count == members.size
@@ -1388,6 +1464,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 
 		# unfollowed
 		(@channels.keys - channels.keys).each do |name|
+      next if @channels[name][:search]
 			post @prefix, PART, name, "No longer follow the list #{name}"
 			updated = true
 		end
@@ -1424,6 +1501,25 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 				message(s, name, nil, nil, command)
 			end
 			channel[:last_id] = res.first.id
+		end
+	end
+
+	def check_searches
+		searches = api("saved_searches",{})
+		searches.each do |search|
+      name = '#s:' + search.name
+      channel = {
+        :name      => name,
+        :search    => search,
+        :latest_id => nil,
+      }
+
+      unless @searches.key?(name) then
+        post @prefix, JOIN, name
+        post server_name, MODE, name, "+mtio", @nick
+        post server_name, MODE, name, "+q", @nick
+      end
+      @searches[name] = channel
 		end
 	end
 
@@ -1474,6 +1570,40 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 			end
 		end
 	end
+
+  def check_search_query
+    updated = false
+    cmd  = PRIVMSG
+    api_base = URI("http://search.twitter.com/")
+    @searches.each do|name, channel|
+      @log.info channel.inspect
+      next unless channel[:search]
+
+      q = { :count => 200, :q => channel[:search].query } 
+      if channel[:latest_id] then
+        q.update(:since_id => channel[:latest_id])
+      end
+
+      api("search", q, :api_base=> api_base).results.reverse_each do|status|
+        id = channel[:latest_id] = status.id
+  
+        status["user"] = {
+          "screen_name" => status.from_user
+        }
+
+        user = status.user
+        tid  = @timeline.push(status)
+        tid  = nil unless @opts.tid
+
+        @log.debug [id, user.screen_name, status.text].inspect
+
+        message(status, name, tid, nil, cmd)
+      end
+
+      updated = true 
+    end
+    updated
+  end
 
 	def check_timeline
 		updated = false
@@ -1701,12 +1831,30 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 	#	%r{ \A status(?:es)?/retweet (?:/|\z) }x === path
 	#end
 
+  def oauth(req)
+    headers = {}
+    req.each{|k,v| headers[k] = v }
+
+    case req
+    when Net::HTTP::Get
+      @oauth.get req.path,headers
+		when Net::HTTP::Head
+      @oauth.head req.path,headers
+		when Net::HTTP::Post
+      @oauth.post req.path,req.body,headers
+		when Net::HTTP::Put
+      @oauth.put req.path,req.body,headers
+		when Net::HTTP::Delete
+      @oauth.delete req.path,req.body,headers
+    end
+  end
+
 	def api(path, query = {}, opts = {})
 		path.sub!(%r{\A/+}, "")
 
 		authenticate = opts.fetch(:authenticate, true)
 
-		uri = api_base(authenticate)
+		uri = opts.fetch(:api_base, api_base(authenticate)) 
 		uri.path += path
 		uri.path += ".json" if path != "users/username_available"
 		uri.query = query.to_query_str unless query.empty?
@@ -1726,7 +1874,11 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 
 		@log.debug [req.method, uri.to_s]
 		begin
-			ret = http(uri, 30, 30).request req
+      if @oauth
+        ret = oauth(req)
+      else
+        ret = http(uri, 30, 30).request req
+      end
 		rescue OpenSSL::SSL::SSLError => e
 			@log.error e.inspect
 			log "Fatal SSL error was happened #{e.inspect}"
@@ -1944,7 +2096,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		end
 
 		text
-	rescue => e
+	rescue Errno::ETIMEDOUT, JSON::ParserError, IOError, Timeout::Error, Errno::ECONNRESET => e
 		@log.error e
 		text
 	end
@@ -1971,7 +2123,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 				raise res.split("|")
 			end
 		end
-	rescue => e
+	rescue Errno::ETIMEDOUT, JSON::ParserError, IOError, Timeout::Error, Errno::ECONNRESET => e
 		@log.error e
 		text
 	end
@@ -2077,7 +2229,7 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		end
 
 		uri
-	rescue => e
+	rescue Errno::ETIMEDOUT, IOError, Timeout::Error, Errno::ECONNRESET => e
 		@log.error e.inspect
 		uri
 	end
@@ -2242,6 +2394,10 @@ class TwitterIrcGateway < Net::IRC::Server::Session
 		def [](name)
 			@obj[name.to_s]
 		end
+
+    def []=(name, obj)
+      @obj[name] = TwitterStruct.make(obj)
+    end
 
 		def hash
 			self.id ? self.id.hash : super
@@ -2492,6 +2648,26 @@ if __FILE__ == $0
 			on("-n", "--name [user name or email address]") do |name|
 				opts[:name] = name
 			end
+
+      on("-o", "--oauth") do|_|
+        require 'oauth'
+        consumer = OAuth::Consumer.new(CONSUMER_KEY,
+                                       CONSUMER_SECRET,
+                                       :site => 'http://twitter.com')
+
+        request_token = consumer.get_request_token
+
+        puts "Access this URL and approve => #{request_token.authorize_url}"
+
+        print "Input OAuth Verifier: "
+        oauth_verifier = gets.chomp.strip
+
+        access_token = request_token.get_access_token(
+          :oauth_verifier => oauth_verifier)
+
+        puts "Please add 'oauth=#{access_token.token}:#{access_token.secret}'"
+        exit 0
+      end
 
 			parse!(ARGV)
 		end
